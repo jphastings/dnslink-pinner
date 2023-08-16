@@ -2,55 +2,74 @@ package monitor
 
 import (
 	"context"
-	"fmt"
 	"io/fs"
-	"path"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/jphastings/dnslink-pinner/internal/dns"
 )
 
+const rotateTimeout = 15 * time.Second
+const minRecheckInterval = 24 * time.Hour
+
 type Repo struct {
-	domains map[string]domain
+	domains []domain
 	fs      fs.FS
 }
 
-type domain struct {
-	path      string
-	nextCheck time.Time
-}
-
-func (d domain) name() string { return path.Base(d.path) }
-
 func New(repo fs.FS) (*Repo, error) {
-
 	return &Repo{
-		domains: map[string]domain{"www.byjp.me": {path: "/www.byjp.me"}},
+		domains: []domain{{path: "/www.byjp.me"}},
 		fs:      repo,
 	}, nil
 }
 
 func (r *Repo) Monitor() error {
-	// The fallback for the latest second check
-	delayUntilNextPause := time.Hour * 24
+	delays := make([]time.Duration, len(r.domains))
 
-	for _, d := range r.domains {
-		nextCheck := time.Until(d.nextCheck)
-		if nextCheck > 0 {
-			if delayUntilNextPause > nextCheck {
-				delayUntilNextPause = nextCheck
+	for {
+		var wg sync.WaitGroup
+
+		for i, d := range r.domains {
+			nextCheck := time.Until(d.nextCheck)
+			if nextCheck > 0 {
+				delays[i] = nextCheck
+				continue
 			}
-			continue
+
+			wg.Add(1)
+			go func(i int, d domain) {
+				defer wg.Done()
+
+				log.Printf("Checking %s", d.name())
+				dnsTTL, err := checkAndRotate(d)
+				if err != nil {
+					d.errorCount += 1
+					log.Printf("Unable to check and rotate CID for %s: %v", d.name(), err)
+					return
+				}
+				delays[i] = dnsTTL
+			}(i, d)
 		}
 
-		cid, _, err := dns.LookupDNSLinkCID(context.Background(), d.name())
-		// TODO: This isn't right; it should be retried
-		if err != nil {
-			return err
-		}
+		wg.Wait()
+		time.Sleep(minDuration(minRecheckInterval, delays...))
+	}
+}
 
-		_ = cid
+func checkAndRotate(d domain) (time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), rotateTimeout)
+	defer cancel()
+
+	cid, dnsTTL, err := dns.LookupDNSLinkCID(ctx, d.name())
+	if err != nil {
+		return time.Duration(0), err
 	}
 
-	return fmt.Errorf("not implemented")
+	if err := d.rotate(ctx, cid); err != nil {
+		return time.Duration(0), err
+	}
+
+	return dnsTTL, nil
 }
