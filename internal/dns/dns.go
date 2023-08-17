@@ -4,21 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"strings"
 	"time"
 
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/projectdiscovery/retryabledns"
+	dnslink "github.com/dnslink-std/go"
 )
 
-var ErrNotDNSLinkDomain = errors.New("no dnslink record found")
+var ErrNotDNSLinkDomain = errors.New("no usable dnslink record found")
+var ErrTooManyDomainRedirects = errors.New("too many domain redirects")
+var ErrDomainRedirectLoop = errors.New("domain redirect loop detected and rejected")
 
-const dnslinkPrefix = "dnslink="
 const maxDNSLinkRedirects = 4
-const maxDNSRetries = 5
+const minRetryTime = 5 * time.Minute
 
 type contextKey string
 
@@ -26,79 +25,70 @@ var previousDomainsKey = contextKey("previousDomains")
 var maxTTLKey = contextKey("maxTTL")
 
 func LookupDNSLinkCID(ctx context.Context, domain string) (cid.Cid, time.Duration, error) {
-	// TODO: How to get TTL out??
-	dns, err := retryabledns.New([]string{"1.1.1.1", "8.8.8.8"}, maxDNSRetries)
-	if err != nil {
-		return cid.Cid{}, time.Duration(0), err
-	}
-
 	// TODO: Context for timeout?
-	data, err := dns.TXT(fmt.Sprintf("_dnslink.%s", domain))
+	res, err := dnslink.Resolve(domain)
 	if err != nil {
-		return cid.Cid{}, time.Duration(0), err
+		return cid.Cid{}, time.Duration(-1), err
 	}
 
-	dnsTTL := time.Duration(data.TTL) * time.Second
-	if prevTTL, ok := ctx.Value(maxTTLKey).(time.Duration); ok {
-		if dnsTTL > prevTTL {
-			dnsTTL = prevTTL
-		}
-	}
+	// Can I use path "github.com/ipfs/boxo/coreiface/path" here?
 
-	ipfsStr := ""
-	for _, txt := range data.TXT {
-		if strings.HasPrefix(txt, dnslinkPrefix) {
-			ipfsStr = strings.TrimPrefix(txt, dnslinkPrefix)
-			break
-		}
-	}
-	if ipfsStr == "" {
-		return cid.Cid{}, time.Duration(0), ErrNotDNSLinkDomain
-	}
+	if len(res.Links["ipfs"]) > 0 {
+		link := res.Links["ipfs"][0]
 
-	if strings.HasPrefix(ipfsStr, "/ipfs/") {
-		c, err := cid.Decode(ipfsStr[6:])
-		return c, dnsTTL, err
-
-	}
-
-	if !strings.HasPrefix(ipfsStr, "/ipns/") {
-		return cid.Cid{}, time.Duration(0), fmt.Errorf("invalid dnslink record: %s", ipfsStr)
-	}
-
-	c, err := cid.Decode(ipfsStr[6:])
-	if err != nil {
-		_, err := peer.FromCid(c)
+		c, err := cid.Decode(link.Identifier)
 		if err != nil {
-			return cid.Cid{}, time.Duration(0), err
+			return cid.Cid{}, time.Duration(-2), err
 		}
-		return c, dnsTTL, nil
+
+		return c, minDurationFromContext(ctx, link.Ttl), nil
 	}
 
-	if _, err := net.LookupHost(ipfsStr[6:]); err != nil {
-		return cid.Cid{}, time.Duration(0), err
+	if len(res.Links["ipns"]) == 0 {
+		return cid.Cid{}, time.Duration(-3), ErrNotDNSLinkDomain
+	}
+
+	link := res.Links["ipns"][0]
+
+	// TODO: resolve the CID, because https://github.com/ipfs/kubo/issues/1467
+	if _, err := peer.Decode(link.Identifier); err == nil {
+		return cid.Cid{}, time.Duration(-4), fmt.Errorf("ipns peer IDs not supported yet")
 	}
 
 	var previousDomains []string
 	var ok bool
 	pd := ctx.Value(previousDomainsKey)
 	if previousDomains, ok = pd.([]string); !ok {
-		return cid.Cid{}, time.Duration(0), fmt.Errorf("previousDomains in context was not a slice of string, was %#v (%T)", pd, pd)
+		return cid.Cid{}, time.Duration(-5), fmt.Errorf("previousDomains in context was not a slice of string, was %#v (%T)", pd, pd)
 	}
 
 	if len(previousDomains) >= maxDNSLinkRedirects {
-		return cid.Cid{}, time.Duration(0), fmt.Errorf("too many domain redirects")
+		return cid.Cid{}, time.Duration(-6), ErrTooManyDomainRedirects
 	}
 
-	redirectedDomain := ipfsStr[6:]
 	for _, prevDomain := range previousDomains {
-		if redirectedDomain == prevDomain {
-			return cid.Cid{}, time.Duration(0), fmt.Errorf("domain redirect loop detected and rejected")
+		if link.Identifier == prevDomain {
+			return cid.Cid{}, time.Duration(-7), ErrDomainRedirectLoop
 		}
 	}
 
 	ctx = context.WithValue(ctx, previousDomainsKey, append(previousDomains, domain))
-	ctx = context.WithValue(ctx, maxTTLKey, dnsTTL)
+	ctx = context.WithValue(ctx, maxTTLKey, minDurationFromContext(ctx, link.Ttl))
 
-	return LookupDNSLinkCID(ctx, redirectedDomain)
+	return LookupDNSLinkCID(ctx, link.Identifier)
+}
+
+func minDurationFromContext(ctx context.Context, seconds uint32) time.Duration {
+	dnsTTL := time.Duration(seconds) * time.Second
+	if prevTTL, ok := ctx.Value(maxTTLKey).(time.Duration); ok {
+		if dnsTTL > prevTTL {
+			dnsTTL = prevTTL
+		}
+	}
+
+	if dnsTTL < minRetryTime {
+		return minRetryTime
+	}
+
+	return dnsTTL
 }

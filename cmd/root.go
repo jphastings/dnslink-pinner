@@ -6,7 +6,9 @@ package cmd
 import (
 	"os"
 
+	"github.com/ipfs/kubo/client/rpc"
 	"github.com/jphastings/dnslink-pinner/internal/monitor"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +26,23 @@ target IPFS node, by polling DNS and rotating the pin if the CID changes.`,
 			dir = args[0]
 		}
 
-		r, err := monitor.New(os.DirFS(dir))
+		apiStr, err := cmd.Flags().GetString("api")
+		if err != nil {
+			return err
+		}
+		a, err := multiaddr.NewMultiaddr(apiStr)
+		if err != nil {
+			return err
+		}
+
+		node, err := rpc.NewApi(a)
+		if err != nil {
+			return err
+		}
+
+		// TODO: Check whether the node is available
+
+		r, err := monitor.New(os.DirFS(dir), node)
 		if err != nil {
 			return err
 		}
@@ -44,5 +62,5 @@ func Execute() {
 }
 
 func init() {
-
+	rootCmd.Flags().String("api", "/ip4/127.0.0.1/tcp/5001", "Multiaddr of the IPFS API to use")
 }

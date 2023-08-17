@@ -1,8 +1,9 @@
 package monitor
 
 import (
-	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"path"
 	"time"
 
@@ -10,34 +11,39 @@ import (
 )
 
 type domain struct {
-	path       string
+	repoFS     fs.FS
+	filename   string
+	name       string
 	currentCid cid.Cid
 	nextCheck  time.Time
 	errorCount uint
 }
 
-func (d domain) name() string { return path.Base(d.path) }
-
-func (d domain) rotate(ctx context.Context, c cid.Cid) error {
-	if d.currentCid.Equals(c) {
-		return nil
+func newDomain(repoFS fs.FS, filename string) (*domain, error) {
+	f, err := repoFS.Open(filename)
+	if err != nil {
+		return nil, err
 	}
-	previousCid := d.currentCid
+	defer f.Close()
 
-	// TODO: Pin new CID
-	if err := d.setCurrentCid(c); err != nil {
-		// TODO: Try to unpin, so we don't have a pin without a reference
-		return fmt.Errorf("not implemented")
+	cidStr, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
 	}
 
-	if previousCid.Defined() {
-		// TODO: Unpin old CID
-		return fmt.Errorf("not implemented")
+	currentCid, err := cid.Parse(cidStr)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil
+	return &domain{
+		name:       path.Base(filename),
+		currentCid: currentCid,
+	}, nil
 }
 
-func (d domain) setCurrentCid(c cid.Cid) error {
+func (d *domain) setCid(c cid.Cid) error {
+	d.currentCid = c
+
 	return fmt.Errorf("not implemented")
 }
