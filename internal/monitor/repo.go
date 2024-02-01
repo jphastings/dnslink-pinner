@@ -119,7 +119,7 @@ func (r *Repo) flagForRotate(ctx context.Context, d *domain, c cid.Cid) error {
 		if err := d.setCid(c); err != nil {
 			return fmt.Errorf("couldn't store the new CID for %s (%s) in the DB: %w", d.name, c.String(), err)
 		}
-		log.Printf("Pinned %s for the first time: %s", d.name, c.String())
+		log.Printf("✨ %s (%s)\n", c.String(), d.name)
 		return nil
 	}
 
@@ -133,7 +133,7 @@ func (r *Repo) flagForRotate(ctx context.Context, d *domain, c cid.Cid) error {
 		return fmt.Errorf("couldn't store the new CID for %s (%s) in the DB: %w", d.name, c.String(), err)
 	}
 
-	log.Printf("Swapped pin for %s, now %s", d.name, c.String())
+	log.Printf("👀 %s (%s)\n", c.String(), d.name)
 	return nil
 }
 
@@ -183,7 +183,7 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 			log.Printf("⚠️ Unable to swap in %s (to replace %s): %v", pair.new.String(), pair.old.String(), err)
 			continue
 		}
-		log.Printf("📍 %s\n", pair.new.String())
+		log.Printf("📌 %s (%s)\n", pair.new.String(), r.domainsForCid(pair.new))
 
 		r.toUnpin = append(r.toUnpin, pair.old)
 	}
@@ -193,11 +193,16 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 		c, r.toPin = r.toPin[0], r.toPin[1:]
 
 		doNotUnpin[c.String()] = struct{}{}
+
+		if isPinned, err := r.isPinned(ctx, c); err == nil && isPinned {
+			continue
+		}
+
 		if err := r.pin(ctx, c); err != nil {
 			log.Printf("⚠️ Unable to pin %s, this will be retried on the next check: %v", c.String(), err)
 		}
 
-		log.Printf("📍 %s\n", c.String())
+		log.Printf("📍 %s (%s)\n", c.String(), r.domainsForCid(c))
 	}
 
 	for len(r.toUnpin) > 0 {
@@ -214,7 +219,7 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 	}
 }
 
-func (r *Repo) pinNameForCid(c cid.Cid) string {
+func (r *Repo) domainsForCid(c cid.Cid) string {
 	var domains []string
 	for _, d := range r.domains {
 		if d.currentCid.Equals(c) {
@@ -227,7 +232,7 @@ func (r *Repo) pinNameForCid(c cid.Cid) string {
 	}
 
 	sort.StringSlice(domains).Sort()
-	return fmt.Sprintf("dnslink-pinner:%s", strings.Join(domains, ","))
+	return strings.Join(domains, ",")
 }
 
 func (r *Repo) pin(ctx context.Context, c cid.Cid) error {
@@ -235,7 +240,7 @@ func (r *Repo) pin(ctx context.Context, c cid.Cid) error {
 	if err != nil {
 		return err
 	}
-	return r.ipfs.Pin().Add(ctx, cp, options.Pin.Recursive(true), options.Pin.Name(r.pinNameForCid(c)))
+	return r.ipfs.Pin().Add(ctx, cp, options.Pin.Recursive(true), options.Pin.Name(r.domainsForCid(c)))
 }
 
 func (r *Repo) unpin(ctx context.Context, c cid.Cid) error {
@@ -246,20 +251,22 @@ func (r *Repo) unpin(ctx context.Context, c cid.Cid) error {
 	return r.ipfs.Pin().Rm(ctx, cp)
 }
 
+func (r *Repo) isPinned(ctx context.Context, c cid.Cid) (bool, error) {
+	cp, err := path.NewPathFromSegments("ipfs", c.String())
+	if err != nil {
+		return false, err
+	}
+	_, isPinned, err := r.ipfs.Pin().IsPinned(ctx, cp)
+	return isPinned, err
+}
+
 // keepIfPinned ensures that if, by chance, a CID referenced by a domain is already pinned for some other reason,
 // it will not be unpinned if that domain moves on to a different CID later.
 func (r *Repo) keepIfPinned(c cid.Cid) error {
 	r.pinSetMutex.Lock()
 	defer r.pinSetMutex.Unlock()
 
-	// TODO: Add timeout
-	ctx := context.Background()
-	cp, err := path.NewPathFromSegments("ipfs", c.String())
-	if err != nil {
-		return err
-	}
-	_, ok, err := r.ipfs.Pin().IsPinned(ctx, cp)
-	if err != nil || !ok {
+	if isPinned, err := r.isPinned(context.Background(), c); err != nil || !isPinned {
 		return err
 	}
 

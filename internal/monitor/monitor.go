@@ -118,7 +118,6 @@ func (r *Repo) checkAndRotate(d *domain) (time.Duration, error) {
 	if err != nil {
 		return time.Duration(0), err
 	}
-	log.Printf("👀 %s (%s)\n", c.String(), d.name)
 
 	if err := d.setCid(c); err != nil {
 		return time.Duration(0), err
