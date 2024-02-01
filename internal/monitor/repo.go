@@ -1,10 +1,12 @@
 package monitor
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/kubo/client/rpc"
 )
+
+const keepFileName = ".cids-no-unpin"
 
 type cidPair struct {
 	new cid.Cid
@@ -26,7 +30,7 @@ type Repo struct {
 
 	pinSetMutex    sync.Mutex
 	domainSetMutex sync.Mutex
-	toKeep         []cid.Cid
+	toKeep         map[cid.Cid]struct{}
 	toPin          []cid.Cid
 	toUnpin        []cid.Cid
 	toSwap         []struct {
@@ -36,7 +40,11 @@ type Repo struct {
 }
 
 func New(rootDir string, ipfs *rpc.HttpApi) (*Repo, error) {
-	repo := &Repo{rootDir: rootDir, ipfs: ipfs}
+	repo := &Repo{
+		rootDir: rootDir,
+		ipfs:    ipfs,
+		toKeep:  make(map[cid.Cid]struct{}),
+	}
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -50,6 +58,10 @@ func New(rootDir string, ipfs *rpc.HttpApi) (*Repo, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't load filesystem repo: %w", err)
+	}
+
+	if err := repo.readKeepfile(); err != nil {
+		return nil, fmt.Errorf("couldn't load keepfile: %w", err)
 	}
 
 	return repo, nil
@@ -76,8 +88,10 @@ func (r *Repo) RemoveDomainByPath(path string) error {
 	for i, d := range r.domains {
 		if d.filename == path {
 			r.domains = append(r.domains[:i], r.domains[i+1:]...)
-			// TODO: trigger unpin
 			log.Printf("➖ %s\n", d.name)
+			if err := r.cueRemove(d.currentCid); err != nil {
+				log.Printf("⚠️ Unable to cue unpin %s (for %s). Please unpin yourself: %v", d.currentCid, d.name, err)
+			}
 			return nil
 		}
 	}
@@ -94,6 +108,9 @@ func (r *Repo) flagForRotate(ctx context.Context, d *domain, c cid.Cid) error {
 	}
 
 	if !d.currentCid.Defined() {
+		if err := r.keepIfPinned(c); err != nil {
+			return err
+		}
 		if err := r.cueAdd(c); err != nil {
 			return fmt.Errorf("couldn't pin CID for the first time for %s: %w", d.name, err)
 		}
@@ -104,6 +121,9 @@ func (r *Repo) flagForRotate(ctx context.Context, d *domain, c cid.Cid) error {
 		return nil
 	}
 
+	if err := r.keepIfPinned(c); err != nil {
+		return err
+	}
 	if err := r.cueSwap(c, d.currentCid); err != nil {
 		return fmt.Errorf("couldn't swap for the new CID (%s) for %s: %w", c.String(), d.name, err)
 	}
@@ -119,10 +139,6 @@ func (r *Repo) cueAdd(newCid cid.Cid) error {
 	r.pinSetMutex.Lock()
 	defer r.pinSetMutex.Unlock()
 
-	if err := r.keepIfPinned(newCid); err != nil {
-		return err
-	}
-
 	r.toPin = append(r.toPin, newCid)
 	return nil
 }
@@ -130,10 +146,6 @@ func (r *Repo) cueAdd(newCid cid.Cid) error {
 func (r *Repo) cueSwap(newCid, oldCid cid.Cid) error {
 	r.pinSetMutex.Lock()
 	defer r.pinSetMutex.Unlock()
-
-	if err := r.keepIfPinned(newCid); err != nil {
-		return err
-	}
 
 	r.toSwap = append(r.toSwap, cidPair{newCid, oldCid})
 	return nil
@@ -152,7 +164,7 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 	defer r.pinSetMutex.Unlock()
 
 	doNotUnpin := make(map[string]struct{})
-	for _, c := range r.toKeep {
+	for c, _ := range r.toKeep {
 		doNotUnpin[c.String()] = struct{}{}
 	}
 
@@ -187,30 +199,73 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 	for len(r.toUnpin) > 0 {
 		c, r.toUnpin = r.toUnpin[0], r.toUnpin[1:]
 		if _, ok := doNotUnpin[c.String()]; ok {
+			fmt.Printf("🛟 Not removing %s as it was manually pinned\n", c.String())
 			continue
 		}
 
 		if err := r.ipfs.Pin().Rm(ctx, path.New(c.String())); err != nil {
 			log.Printf("⚠️ Unable to unpin %s, you should manually unpin it: %v", c.String(), err)
 		}
-		log.Printf("🗑️ %s\n", c.String())
+		log.Printf("🚮 %s\n", c.String())
 	}
 }
 
 // keepIfPinned ensures that if, by chance, a CID referenced by a domain is already pinned for some other reason,
 // it will not be unpinned if that domain moves on to a different CID later.
-// It expects that r.pinSetMutex.Lock() is already held by the executing thread
 func (r *Repo) keepIfPinned(cid cid.Cid) error {
+	r.pinSetMutex.Lock()
+	defer r.pinSetMutex.Unlock()
+
 	// TODO: Add timeout
 	ctx := context.Background()
 	_, ok, err := r.ipfs.Pin().IsPinned(ctx, path.New(cid.String()))
-	if err != nil {
+	if err != nil || !ok {
 		return err
 	}
 
-	if ok {
-		r.toKeep = append(r.toKeep, cid)
-		// TODO: Also write to file
+	r.toKeep[cid] = struct{}{}
+	if err := r.writeKeepfile(); err != nil {
+		return fmt.Errorf("couldn't write keepfile to ensure %s is not unpinned: %w", cid.String(), err)
+	}
+
+	return nil
+}
+
+// writeKeepfile writes the CIDs in r.toKeep to the keepfile
+// It expects that r.pinSetMutex.Lock() is already held by the executing thread
+func (r *Repo) writeKeepfile() error {
+	f, err := os.OpenFile(filepath.Join(r.rootDir, keepFileName), os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for c, _ := range r.toKeep {
+		if _, err := f.WriteString(c.String() + "\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readKeepfile loads the CIDs from the keepfile into r.toKeep
+// It expects to have exclusive access to the keepfile. Claim r.pinSetMutex.Lock() if needed.
+func (r *Repo) readKeepfile() error {
+	file, err := os.Open(filepath.Join(r.rootDir, keepFileName))
+	if err != nil {
+		// There doesn't need to be a valid keepfile
+		return nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		c, err := cid.Decode(line)
+		if err != nil {
+			return fmt.Errorf("couldn't decode CID (%s) in keepfile: %w", line, err)
+		}
+		r.toKeep[c] = struct{}{}
 	}
 
 	return nil
