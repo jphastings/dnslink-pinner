@@ -56,6 +56,11 @@ func newDomain(filename string) (*domain, error) {
 }
 
 func (d *domain) setCid(c cid.Cid) error {
+	data, err := os.ReadFile(d.filename)
+	if err == nil && string(data) == c.String() {
+		return nil
+	}
+
 	d.currentCid = c
 	if err := os.WriteFile(d.filename, []byte(c.String()), 0644); err != nil {
 		return fmt.Errorf("couldn't write CID to file: %w", err)

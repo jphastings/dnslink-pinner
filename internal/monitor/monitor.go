@@ -13,7 +13,7 @@ import (
 )
 
 const rotateTimeout = 15 * time.Second
-const minRecheckInterval = 15 * time.Minute
+const minRecheckInterval = 5 * time.Minute
 
 func (r *Repo) Monitor() error {
 	requestRefresh := make(chan struct{}, 1)
@@ -73,17 +73,19 @@ func watchDir(r *Repo, requestRefresh func()) (Closer, error) {
 				if !ok {
 					return
 				}
+				doRefresh := false
+
 				if event.Has(fsnotify.Create) {
 					if err := r.AddDomainByPath(event.Name); err != nil {
 						log.Printf("😩 Unable to add new domain to checker %s: %v\n", event.Name, err)
 					}
-					requestRefresh()
+					doRefresh = true
 				}
 				if event.Has(fsnotify.Remove) {
 					if err := r.RemoveDomainByPath(event.Name); err != nil {
 						log.Printf("😩 Unable to remove domain to checker %s: %v\n", event.Name, err)
 					}
-					requestRefresh()
+					doRefresh = true
 				}
 				// On some operating systems a delete is modelled as a rename into the trash
 				if event.Has(fsnotify.Rename) {
@@ -92,13 +94,23 @@ func watchDir(r *Repo, requestRefresh func()) (Closer, error) {
 							log.Printf("😩 Unable to remove domain to checker %s: %v\n", event.Name, err)
 						}
 					}
+					doRefresh = true
+				}
+
+				if event.Has(fsnotify.Chmod) {
+					// This will trigger twice when a new file is created, once for the create and once for the chmod that comes
+					// when the CID is stored. De-duping there would cause way more complexity than it's worth.
+					doRefresh = true
+				}
+
+				if doRefresh {
 					requestRefresh()
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Printf("📁 issue while checking filesystem: %v\n", err)
+				log.Printf("📁 issue while watching filesystem: %v\n", err)
 			}
 		}
 	}()
