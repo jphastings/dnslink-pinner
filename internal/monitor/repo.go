@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/ipfs/boxo/coreiface/options"
-	"github.com/ipfs/boxo/coreiface/path"
+	"github.com/ipfs/boxo/path"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/kubo/client/rpc"
+	"github.com/ipfs/kubo/core/coreiface/options"
 )
 
 const keepFileName = ".cids-no-unpin"
@@ -163,6 +163,8 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 	r.pinSetMutex.Lock()
 	defer r.pinSetMutex.Unlock()
 
+	// These are not exclusively toKeep pins, but to ensure that multiple domains pointing to
+	// the same CID are not unpinned if one of them is swapped.
 	doNotUnpin := make(map[string]struct{})
 	for c, _ := range r.toKeep {
 		doNotUnpin[c.String()] = struct{}{}
@@ -174,7 +176,7 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 
 		doNotUnpin[pair.new.String()] = struct{}{}
 
-		if err := r.ipfs.Pin().Add(ctx, path.New(pair.new.String()), options.Pin.Recursive(true)); err != nil {
+		if err := r.pin(ctx, pair.new); err != nil {
 			doNotUnpin[pair.old.String()] = struct{}{}
 			log.Printf("⚠️ Unable to swap in %s (to replace %s): %v", pair.new.String(), pair.old.String(), err)
 			continue
@@ -189,7 +191,7 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 		c, r.toPin = r.toPin[0], r.toPin[1:]
 
 		doNotUnpin[c.String()] = struct{}{}
-		if err := r.ipfs.Pin().Add(ctx, path.New(c.String()), options.Pin.Recursive(true)); err != nil {
+		if err := r.pin(ctx, c); err != nil {
 			log.Printf("⚠️ Unable to pin %s, this will be retried on the next check: %v", c.String(), err)
 		}
 
@@ -203,29 +205,49 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 			continue
 		}
 
-		if err := r.ipfs.Pin().Rm(ctx, path.New(c.String())); err != nil {
+		if err := r.unpin(ctx, c); err != nil {
 			log.Printf("⚠️ Unable to unpin %s, you should manually unpin it: %v", c.String(), err)
 		}
 		log.Printf("🚮 %s\n", c.String())
 	}
 }
 
+func (r *Repo) pin(ctx context.Context, c cid.Cid) error {
+	cp, err := path.NewPathFromSegments("ipfs", c.String())
+	if err != nil {
+		return err
+	}
+	return r.ipfs.Pin().Add(ctx, cp, options.Pin.Recursive(true))
+}
+
+func (r *Repo) unpin(ctx context.Context, c cid.Cid) error {
+	cp, err := path.NewPathFromSegments("ipfs", c.String())
+	if err != nil {
+		return err
+	}
+	return r.ipfs.Pin().Rm(ctx, cp)
+}
+
 // keepIfPinned ensures that if, by chance, a CID referenced by a domain is already pinned for some other reason,
 // it will not be unpinned if that domain moves on to a different CID later.
-func (r *Repo) keepIfPinned(cid cid.Cid) error {
+func (r *Repo) keepIfPinned(c cid.Cid) error {
 	r.pinSetMutex.Lock()
 	defer r.pinSetMutex.Unlock()
 
 	// TODO: Add timeout
 	ctx := context.Background()
-	_, ok, err := r.ipfs.Pin().IsPinned(ctx, path.New(cid.String()))
+	cp, err := path.NewPathFromSegments("ipfs", c.String())
+	if err != nil {
+		return err
+	}
+	_, ok, err := r.ipfs.Pin().IsPinned(ctx, cp)
 	if err != nil || !ok {
 		return err
 	}
 
-	r.toKeep[cid] = struct{}{}
+	r.toKeep[c] = struct{}{}
 	if err := r.writeKeepfile(); err != nil {
-		return fmt.Errorf("couldn't write keepfile to ensure %s is not unpinned: %w", cid.String(), err)
+		return fmt.Errorf("couldn't write keepfile to ensure %s is not unpinned: %w", c.String(), err)
 	}
 
 	return nil

@@ -1,4 +1,4 @@
 # TODO
 
-- [ ] Upgrade to Kobo 0.26
+- [x] Upgrade to Kobo 0.26
 - [ ] Name the pins with the domains they're pinned for
