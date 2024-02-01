@@ -40,8 +40,6 @@ target IPFS node, by polling DNS and rotating the pin if the CID changes.`,
 			return err
 		}
 
-		// TODO: Check whether the node is available
-
 		r, err := monitor.New(dir, node)
 		if err != nil {
 			return err

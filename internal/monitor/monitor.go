@@ -13,37 +13,33 @@ const rotateTimeout = 15 * time.Second
 const minRecheckInterval = 24 * time.Hour
 
 func (r *Repo) Monitor() error {
-	delays := make([]time.Duration, len(r.domains))
-
 	for {
 		var wg sync.WaitGroup
 
-		for i, d := range r.domains {
-			nextCheck := time.Until(d.nextCheck)
-			if nextCheck > 0 {
-				delays[i] = nextCheck
-				continue
-			}
+		r.domainSetMutex.Lock()
+		domains := make([]*domain, len(r.domains))
+		copy(domains, r.domains)
+		r.domainSetMutex.Unlock()
 
+		for _, d := range domains {
 			wg.Add(1)
-			go func(i int, d *domain) {
+			go func(d *domain) {
 				defer wg.Done()
 
-				dnsTTL, err := r.checkAndRotate(d)
+				_, err := r.checkAndRotate(d)
 				if err != nil {
 					d.errorCount += 1
 					log.Printf("Unable to check and rotate CID for %s: %v", d.name, err)
 					return
 				}
-				delays[i] = dnsTTL
-			}(i, d)
+			}(d)
 		}
 
 		wg.Wait()
 
 		r.performPinChanges(context.Background())
 
-		time.Sleep(minDuration(minRecheckInterval, delays...))
+		time.Sleep(minRecheckInterval)
 	}
 }
 
@@ -55,7 +51,7 @@ func (r *Repo) checkAndRotate(d *domain) (time.Duration, error) {
 	if err != nil {
 		return time.Duration(0), err
 	}
-	log.Printf("Update: %s => %s\n", d.name, c.String())
+	log.Printf("Found: %s => %s\n", d.name, c.String())
 
 	if err := d.setCid(c); err != nil {
 		return time.Duration(0), err
