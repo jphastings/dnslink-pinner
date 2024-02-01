@@ -56,9 +56,13 @@ func LookupDNSLinkCID(ctx context.Context, domain string) (cid.Cid, time.Duratio
 	}
 
 	var previousDomains []string
-	var ok bool
 	pd := ctx.Value(previousDomainsKey)
-	if previousDomains, ok = pd.([]string); !ok {
+	switch pd := pd.(type) {
+	case nil:
+		previousDomains = []string{}
+	case []string:
+		previousDomains = pd
+	default:
 		return cid.Cid{}, time.Duration(-5), fmt.Errorf("previousDomains in context was not a slice of string, was %#v (%T)", pd, pd)
 	}
 

@@ -20,6 +20,7 @@ type cidPair struct {
 }
 
 type Repo struct {
+	rootDir string
 	domains []*domain
 	ipfs    *rpc.HttpApi
 
@@ -35,7 +36,7 @@ type Repo struct {
 }
 
 func New(rootDir string, ipfs *rpc.HttpApi) (*Repo, error) {
-	repo := &Repo{ipfs: ipfs}
+	repo := &Repo{rootDir: rootDir, ipfs: ipfs}
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -64,6 +65,7 @@ func (r *Repo) AddDomainByPath(path string) error {
 	}
 
 	r.domains = append(r.domains, domain)
+	log.Printf("➕ %s\n", domain.name)
 	return nil
 }
 
@@ -74,6 +76,8 @@ func (r *Repo) RemoveDomainByPath(path string) error {
 	for i, d := range r.domains {
 		if d.filename == path {
 			r.domains = append(r.domains[:i], r.domains[i+1:]...)
+			// TODO: trigger unpin
+			log.Printf("➖ %s\n", d.name)
 			return nil
 		}
 	}
@@ -160,13 +164,12 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 
 		if err := r.ipfs.Pin().Add(ctx, path.New(pair.new.String()), options.Pin.Recursive(true)); err != nil {
 			doNotUnpin[pair.old.String()] = struct{}{}
-			log.Printf("Unable to swap in %s (to replace %s): %v", pair.new.String(), pair.old.String(), err)
+			log.Printf("⚠️ Unable to swap in %s (to replace %s): %v", pair.new.String(), pair.old.String(), err)
 			continue
 		}
+		log.Printf("📍 %s\n", pair.new.String())
 
-		if err := r.ipfs.Pin().Rm(ctx, path.New(pair.old.String())); err != nil {
-			log.Printf("Unable to unpin %s, you should manually remove this: %v", pair.old.String(), err)
-		}
+		r.toUnpin = append(r.toUnpin, pair.old)
 	}
 
 	var c cid.Cid
@@ -175,8 +178,10 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 
 		doNotUnpin[c.String()] = struct{}{}
 		if err := r.ipfs.Pin().Add(ctx, path.New(c.String()), options.Pin.Recursive(true)); err != nil {
-			log.Printf("Unable to pin %s, this will be retried on the next check: %v", c.String(), err)
+			log.Printf("⚠️ Unable to pin %s, this will be retried on the next check: %v", c.String(), err)
 		}
+
+		log.Printf("📍 %s\n", c.String())
 	}
 
 	for len(r.toUnpin) > 0 {
@@ -186,8 +191,9 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 		}
 
 		if err := r.ipfs.Pin().Rm(ctx, path.New(c.String())); err != nil {
-			log.Printf("Unable to unpin %s, you should manually remove this: %v", c.String(), err)
+			log.Printf("⚠️ Unable to unpin %s, you should manually unpin it: %v", c.String(), err)
 		}
+		log.Printf("🗑️ %s\n", c.String())
 	}
 }
 

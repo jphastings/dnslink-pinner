@@ -4,6 +4,7 @@ go 1.20
 
 require (
 	github.com/dnslink-std/go v0.6.0
+	github.com/fsnotify/fsnotify v1.6.0
 	github.com/ipfs/boxo v0.11.0
 	github.com/ipfs/go-cid v0.4.1
 	github.com/ipfs/kubo v0.22.0

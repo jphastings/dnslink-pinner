@@ -2,9 +2,9 @@ package monitor
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
-	"time"
 
 	"github.com/ipfs/go-cid"
 )
@@ -13,8 +13,16 @@ type domain struct {
 	filename   string
 	name       string
 	currentCid cid.Cid
-	nextCheck  time.Time
 	errorCount uint
+}
+
+func isFQDN(s string) bool {
+	u, err := url.Parse("http://" + s)
+	if err != nil {
+		return false
+	}
+
+	return u.Hostname() == s
 }
 
 func newDomain(filename string) (*domain, error) {
@@ -23,9 +31,14 @@ func newDomain(filename string) (*domain, error) {
 		return nil, err
 	}
 
+	name := path.Base(filename)
+	if !isFQDN(name) {
+		return nil, fmt.Errorf("the file %s (in %s) is not a fully qualified domain name", name, path.Dir(filename))
+	}
+
 	if len(cidStr) == 0 {
 		return &domain{
-			name:     path.Base(filename),
+			name:     name,
 			filename: filename,
 		}, nil
 	}
