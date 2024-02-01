@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/ipfs/boxo/path"
@@ -212,12 +214,28 @@ func (r *Repo) performPinChanges(ctx context.Context) {
 	}
 }
 
+func (r *Repo) pinNameForCid(c cid.Cid) string {
+	var domains []string
+	for _, d := range r.domains {
+		if d.currentCid.Equals(c) {
+			domains = append(domains, d.name)
+		}
+	}
+
+	if len(domains) == 0 {
+		return ""
+	}
+
+	sort.StringSlice(domains).Sort()
+	return fmt.Sprintf("dnslink-pinner:%s", strings.Join(domains, ","))
+}
+
 func (r *Repo) pin(ctx context.Context, c cid.Cid) error {
 	cp, err := path.NewPathFromSegments("ipfs", c.String())
 	if err != nil {
 		return err
 	}
-	return r.ipfs.Pin().Add(ctx, cp, options.Pin.Recursive(true))
+	return r.ipfs.Pin().Add(ctx, cp, options.Pin.Recursive(true), options.Pin.Name(r.pinNameForCid(c)))
 }
 
 func (r *Repo) unpin(ctx context.Context, c cid.Cid) error {
