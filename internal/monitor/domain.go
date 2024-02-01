@@ -2,8 +2,7 @@ package monitor
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
+	"os"
 	"path"
 	"time"
 
@@ -11,7 +10,6 @@ import (
 )
 
 type domain struct {
-	repoFS     fs.FS
 	filename   string
 	name       string
 	currentCid cid.Cid
@@ -19,19 +17,20 @@ type domain struct {
 	errorCount uint
 }
 
-func newDomain(repoFS fs.FS, filename string) (*domain, error) {
-	f, err := repoFS.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	cidStr, err := io.ReadAll(f)
+func newDomain(filename string) (*domain, error) {
+	cidStr, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	currentCid, err := cid.Parse(cidStr)
+	if len(cidStr) == 0 {
+		return &domain{
+			name:     path.Base(filename),
+			filename: filename,
+		}, nil
+	}
+
+	currentCid, err := cid.Decode(string(cidStr))
 	if err != nil {
 		return nil, err
 	}
@@ -39,11 +38,15 @@ func newDomain(repoFS fs.FS, filename string) (*domain, error) {
 	return &domain{
 		name:       path.Base(filename),
 		currentCid: currentCid,
+		filename:   filename,
 	}, nil
 }
 
 func (d *domain) setCid(c cid.Cid) error {
 	d.currentCid = c
+	if err := os.WriteFile(d.filename, []byte(c.String()), 0644); err != nil {
+		return fmt.Errorf("couldn't write CID to file: %w", err)
+	}
 
-	return fmt.Errorf("not implemented")
+	return nil
 }

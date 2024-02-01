@@ -55,6 +55,11 @@ func (r *Repo) checkAndRotate(d *domain) (time.Duration, error) {
 	if err != nil {
 		return time.Duration(0), err
 	}
+	log.Printf("Update: %s => %s\n", d.name, c.String())
+
+	if err := d.setCid(c); err != nil {
+		return time.Duration(0), err
+	}
 
 	r.flagForRotate(ctx, d, c)
 	return dnsTTL, nil

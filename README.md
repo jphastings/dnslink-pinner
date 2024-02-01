@@ -1,6 +1,6 @@
 # IPFS DNSLink Pinner
 
-A background worker that regularly checks DNSLink pointers to IPFS (or IPNS) content and ensures the local/target IPFS node has (only) that content pinned.
+A background worker that regularly checks DNSLink pointers to IPFS (or IPNS) content and ensures the local/target IPFS node has that content pinned.
 
 ## Usage
 
@@ -8,7 +8,7 @@ A background worker that regularly checks DNSLink pointers to IPFS (or IPNS) con
 $ tree ./domains
 ./domains
 ├── .dnslink-pinner.toml
-├── ipfs.io
+├── www.ipfs.io
 ├── cid.ipfs.tech
 └── explore.ipld.io
 

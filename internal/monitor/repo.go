@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"path/filepath"
 	"sync"
 
 	"github.com/ipfs/boxo/coreiface/options"
@@ -26,14 +27,18 @@ type Repo struct {
 	}
 }
 
-func New(repoFS fs.FS, ipfs *rpc.HttpApi) (*Repo, error) {
+func New(rootDir string, ipfs *rpc.HttpApi) (*Repo, error) {
 	var domains []*domain
-	err := fs.WalkDir(repoFS, ".", func(path string, d fs.DirEntry, err error) error {
-		if d.IsDir() || d.Name()[0:1] == "." {
+	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
 			return nil
 		}
 
-		domain, err := newDomain(repoFS, d.Name())
+		if d == nil || d.IsDir() || d.Name()[0:1] == "." {
+			return nil
+		}
+
+		domain, err := newDomain(path)
 		if err != nil {
 			return fmt.Errorf("couldn't load domain at %s: %w", d.Name(), err)
 		}
