@@ -2,6 +2,9 @@
 
 A background worker that regularly checks DNSLink pointers to IPFS (or IPNS) content and ensures the local/target IPFS node has that content pinned.
 
+> [!WARNING]
+> This code is currently in a "built for _me_" state — something of a proof of concept, with rough edges and limited testing. If you're interested in me developing this code further [please reach out](https://www.byjp.me/standing-invitation)! Usefulness in the rest of the world and enthusiasm from others is a great motivator 😊
+
 ## Install
 
 ```sh
